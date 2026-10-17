@@ -1,0 +1,65 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: MC ${{ matrix.mc }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      # 一个版本失败不影响另一个版本继续跑，方便一次看清两个版本的真实状态
+      fail-fast: false
+      matrix:
+        mc: ['1.20.1', '1.20.4']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # 仓库里没有 gradle-wrapper.jar（二进制不便入库），直接用官方分发包。
+      # 版本必须与 gradle/wrapper/gradle-wrapper.properties 保持一致。
+      - name: Set up Gradle 8.8
+        run: |
+          curl -sSLo "$RUNNER_TEMP/gradle.zip" https://services.gradle.org/distributions/gradle-8.8-bin.zip
+          unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP/gradle-dist"
+          echo "$RUNNER_TEMP/gradle-dist/gradle-8.8/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/gradle-dist/gradle-8.8/bin/gradle" --version
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ matrix.mc }}-${{ hashFiles('**/*.gradle', 'gradle.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-${{ matrix.mc }}-
+            gradle-${{ runner.os }}-
+
+      - name: Show target versions
+        run: gradle printProfile -Pmc_version=${{ matrix.mc }} --no-daemon -q
+
+      - name: Build
+        run: gradle build -Pmc_version=${{ matrix.mc }} --no-daemon --stacktrace
+
+      # 即使编译失败也把已产出的东西传上来，方便看 build/ 里的日志线索
+      - name: Upload jar
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tidin-ctrl-menu-${{ matrix.mc }}
+          path: build/libs/*.jar
+          if-no-files-found: warn
