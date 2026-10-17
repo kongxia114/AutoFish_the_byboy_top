@@ -1,0 +1,14 @@
+// Fabric Loom 插件只发布在 Fabric 的 Maven 仓库，必须在这里声明，否则
+// “id 'fabric-loom' version '1.7.4'” 会报 Plugin [id: 'fabric-loom'] was not found。
+pluginManagement {
+    repositories {
+        maven {
+            name = 'Fabric'
+            url = 'https://maven.fabricmc.net/'
+        }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+rootProject.name = 'tidin-ctrl-menu'

@@ -1,0 +1,93 @@
+plugins {
+    // Fabric 的 Minecraft 反混淆 / 打包工具。需配套 Gradle 8.8（见 CI 与 gradle/wrapper）。
+    id 'fabric-loom' version '1.7.4'
+}
+
+// ===========================================================================
+// 多版本档案表
+//   一个开关 -Pmc_version=1.20.x 就能切换整套依赖，避免 yarn / loader / api
+//   三者版本错配（这是多版本工程最常见的翻车点）。默认值取 gradle.properties。
+// ===========================================================================
+def MC_PROFILES = [
+        '1.20.1': [
+                yarn  : '1.20.1+build.10',
+                loader: '0.16.14',
+                api   : '0.92.12+1.20.1',
+                dep   : '~1.20.1',
+        ],
+        '1.20.4': [
+                yarn  : '1.20.4+build.3',
+                loader: '0.16.14',
+                api   : '0.97.2+1.20.4',
+                // 1.20.4 是 1.20.x 的最后一版；1.20.2 / 1.20.3 与之同代 API，
+                // 通常可直接用这个 jar，故依赖范围放宽到整个 1.20.2~1.20.4。
+                dep   : '>=1.20.2 <1.21',
+        ],
+]
+
+def mcVersion = (project.findProperty('mc_version') ?: '1.20.4').toString()
+def profile = MC_PROFILES[mcVersion]
+if (profile == null) {
+    throw new GradleException("未知的 mc_version=${mcVersion}，可选值：${MC_PROFILES.keySet().join(' / ')}")
+}
+
+// 产物名带版本后缀，1.20.1 与 1.20.4 两个 jar 不会互相覆盖
+version = "${project.mod_version}+${mcVersion}"
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+repositories {
+    maven {
+        name = 'Fabric'
+        url = 'https://maven.fabricmc.net/'
+    }
+    mavenCentral()
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${mcVersion}"
+    mappings "net.fabricmc:yarn:${profile.yarn}:v2"
+
+    modImplementation "net.fabricmc:fabric-loader:${profile.loader}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${profile.api}"
+}
+
+// 把版本号与目标 MC 范围填进 fabric.mod.json 的占位符
+processResources {
+    inputs.property 'version', project.version
+    inputs.property 'minecraft_dep', profile.dep
+
+    filesMatching('fabric.mod.json') {
+        expand 'version': project.version, 'minecraft_dep': profile.dep
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    // 1.20.x 运行在 Java 17 上；用 release 而非 sourceCompatibility，
+    // 免得 CI 的 JDK 21 编出 Java 17 不认的字节码。
+    options.release = 17
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+    withSourcesJar()
+}
+
+// 打印本次实际使用的版本组合，排查多版本问题时先看这个
+tasks.register('printProfile') {
+    group = 'help'
+    description = '显示本次构建使用的 Minecraft / Yarn / Fabric API 版本'
+    doLast {
+        println "mc_version   = ${mcVersion}"
+        println "yarn         = ${profile.yarn}"
+        println "loader       = ${profile.loader}"
+        println "fabric-api   = ${profile.api}"
+        println "minecraft dep= ${profile.dep}"
+        println "jar version  = ${project.version}"
+    }
+}
