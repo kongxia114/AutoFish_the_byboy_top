@@ -15,6 +15,8 @@ import net.minecraft.text.Text;
 import net.minecraft.util.math.MathHelper;
 import org.lwjgl.glfw.GLFW;
 
+import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -40,6 +42,13 @@ public final class FunctionMenuScreen extends Screen {
 
     private final Screen parent;
 
+    /**
+     * 自己维护的控件列表，用于手动按「先面板、后控件」的顺序渲染。
+     * 不能调 super.render()：它内部会先画原版背景（1.20.4 的 renderBackground 签名
+     * 与 1.20.1 不同，我没法覆写成空方法），那层背景会盖在面板上面。
+     */
+    private final List<ClickableWidget> widgetList = new ArrayList<>();
+
     private int tab = 0;
     private String status = null;
     private int statusTicks = 0;
@@ -64,6 +73,7 @@ public final class FunctionMenuScreen extends Screen {
     @Override
     protected void init() {
         super.init();
+        widgetList.clear();
         layoutPanel();
 
         int tabH = 20;
@@ -76,9 +86,9 @@ public final class FunctionMenuScreen extends Screen {
         int tabX = panelX + (panelW - totalTabW) / 2;
         int tabY = panelY + 48;
 
-        addDrawableChild(new MenuTabWidget(tabX, tabY, tabW, tabH, 0, Text.translatable("tidinmenu.tab.tools")));
-        addDrawableChild(new MenuTabWidget(tabX + tabW + tabGap, tabY, tabW, tabH, 1, Text.translatable("tidinmenu.tab.world")));
-        addDrawableChild(new MenuTabWidget(tabX + (tabW + tabGap) * 2, tabY, tabW, tabH, 2, Text.translatable("tidinmenu.tab.settings")));
+        addWidget(tabButton(tabX, tabY, tabW, tabH, 0, "tidinmenu.tab.tools"));
+        addWidget(tabButton(tabX + tabW + tabGap, tabY, tabW, tabH, 1, "tidinmenu.tab.world"));
+        addWidget(tabButton(tabX + (tabW + tabGap) * 2, tabY, tabW, tabH, 2, "tidinmenu.tab.settings"));
 
         switch (tab) {
             case 0 -> buildTools();
@@ -120,12 +130,14 @@ public final class FunctionMenuScreen extends Screen {
                 clearAndInit();
             }).dimensions(grid.x(1), grid.y(1), grid.colW, 20).build());
 
-        boolean debugOn = client != null && client.options != null && client.options.debugEnabled;
+        boolean debugOn = isDebugInfoOn(client);
         addWidget(ButtonWidget.builder(
             Text.translatable(debugOn ? "tidinmenu.tool.debug_on" : "tidinmenu.tool.debug_off"),
             b -> {
-                client.options.debugEnabled = !client.options.debugEnabled;
-                setStatus(client.options.debugEnabled ? "已打开调试信息" : "已关闭调试信息");
+                Boolean now = toggleDebugInfo(client);
+                setStatus(now == null
+                    ? "当前版本没有这个开关，请直接按 F3"
+                    : (now ? "已打开调试信息" : "已关闭调试信息"));
                 clearAndInit();
             }).dimensions(grid.x(2), grid.y(2), grid.colW, 20).build());
 
@@ -434,11 +446,6 @@ public final class FunctionMenuScreen extends Screen {
         return false;
     }
 
-    @Override
-    public void renderBackground(DrawContext context) {
-        // 不使用原版的泥土背景与模糊，画面由 render() 自己绘制。
-    }
-
     // ---------------------------------------------------------------
     // 绘制
     // ---------------------------------------------------------------
@@ -452,7 +459,10 @@ public final class FunctionMenuScreen extends Screen {
         drawTitle(context);
         context.fill(panelX + 12, panelY + 76, panelX + panelW - 12, panelY + 77, SEPARATOR);
 
-        super.render(context, mouseX, mouseY, delta);
+        // 手动渲染控件：不调 super.render()，否则原版背景会盖在面板上面（见 widgetList 的注释）
+        for (ClickableWidget widget : widgetList) {
+            widget.render(context, mouseX, mouseY, delta);
+        }
 
         if (tab == 0) {
             drawSpinReadout(context);
@@ -530,6 +540,7 @@ public final class FunctionMenuScreen extends Screen {
     }
 
     private void addWidget(ClickableWidget widget) {
+        widgetList.add(widget);
         addDrawableChild(widget);
     }
 
@@ -601,52 +612,71 @@ public final class FunctionMenuScreen extends Screen {
     }
 
     // ---------------------------------------------------------------
+    // F3 调试信息开关
+    //   GameOptions 上的这个字段名在 1.20.1 / 1.20.4 之间不一致（直接写会编译失败），
+    //   所以用反射桥接：有就切换，没有就提示玩家自己按 F3。
+    // ---------------------------------------------------------------
+
+    private static Field debugInfoField(MinecraftClient client) {
+        if (client == null || client.options == null) {
+            return null;
+        }
+        try {
+            return client.options.getClass().getField("debugEnabled");
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static boolean isDebugInfoOn(MinecraftClient client) {
+        Field field = debugInfoField(client);
+        if (field == null) {
+            return false;
+        }
+        try {
+            return field.getBoolean(client.options);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    /** @return 切换后的状态；当前版本没有该字段时返回 null。 */
+    private static Boolean toggleDebugInfo(MinecraftClient client) {
+        Field field = debugInfoField(client);
+        if (field == null) {
+            return null;
+        }
+        try {
+            boolean now = !field.getBoolean(client.options);
+            field.setBoolean(client.options, now);
+            return now;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    // ---------------------------------------------------------------
     // 标签页按钮
     // ---------------------------------------------------------------
 
-    private final class MenuTabWidget extends PressableWidget {
-        private final int index;
-
-        private MenuTabWidget(int x, int y, int width, int height, int index, Text label) {
-            super(x, y, width, height, label);
-            this.index = index;
+    /**
+     * 标签页按钮。用原版按钮而不是自绘控件：{@code PressableWidget} 的绘制钩子
+     * 在 1.20.1 叫 {@code renderButton}、在 1.20.4 改名为 {@code renderWidget}，
+     * 同一份源码没法在两边都写 @Override，所以统一用 ButtonWidget，
+     * 选中页用「▸」前缀 + 置灰表示。
+     */
+    private ButtonWidget tabButton(int x, int y, int w, int h, int index, String langKey) {
+        MutableText label = Text.translatable(langKey);
+        if (tab == index) {
+            label = Text.literal("▸ ").append(label);
         }
-
-        @Override
-        public void onPress() {
+        ButtonWidget button = ButtonWidget.builder(label, b -> {
             if (tab != index) {
                 tab = index;
                 clearAndInit();
             }
-        }
-
-        @Override
-        protected void renderButton(DrawContext context, int mouseX, int mouseY, float delta) {
-            int x = getX();
-            int y = getY();
-            if (index == tab) {
-                context.fill(x, y, x + width, y + height, TAB_SELECTED_BG);
-                context.drawCenteredTextWithShadow(textRenderer, getMessage(),
-                    x + width / 2, y + (height - 8) / 2, TAB_SELECTED_TEXT);
-            } else {
-                context.fill(x, y, x + width, y + height, isHovered() ? TAB_HOVER_BG : TAB_IDLE_BG);
-                context.fill(x, y, x + width, y + 1, PANEL_BORDER);
-                context.fill(x, y + height - 1, x + width, y + height, PANEL_BORDER);
-                context.fill(x, y, x + 1, y + height, PANEL_BORDER);
-                context.fill(x + width - 1, y, x + width, y + height, PANEL_BORDER);
-                context.drawCenteredTextWithShadow(textRenderer, getMessage(),
-                    x + width / 2, y + (height - 8) / 2, TEXT_WHITE);
-            }
-        }
-
-        @Override
-        protected MutableText getNarrationMessage() {
-            return Text.literal(this.getMessage().getString());
-        }
-
-        @Override
-        protected void appendClickableNarrations(NarrationMessageBuilder builder) {
-            appendDefaultNarrations(builder);
-        }
+        }).dimensions(x, y, w, h).build();
+        button.active = tab != index;
+        return button;
     }
 }
