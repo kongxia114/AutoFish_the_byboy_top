@@ -1,0 +1,24 @@
+# Gradle
+.gradle/
+build/
+out/
+
+# IDE：IntelliJ idea
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# IDE：VSCode / Eclipse
+.vscode/
+.classpath
+.project
+.settings/
+bin/
+
+# Loom 的运行目录（runClient 等）
+run/
+
+# 系统
+.DS_Store
+Thumbs.db
